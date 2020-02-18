@@ -1656,7 +1656,7 @@ func (c *Cloud) GetCandidateZonesForDynamicVolume() (sets.String, error) {
 	baseFilters := []*ec2.Filter{newEc2Filter("instance-state-name", "running")}
 
 	filters := c.tagging.addFilters(baseFilters)
-	di, err := c.describeInstances(filters)
+	di, err := c.describeInstances(nil, filters)
 	if err != nil {
 		return nil, err
 	}
@@ -1665,7 +1665,7 @@ func (c *Cloud) GetCandidateZonesForDynamicVolume() (sets.String, error) {
 
 	if c.tagging.usesLegacyTags {
 		filters = c.tagging.addLegacyFilters(baseFilters)
-		di, err = c.describeInstances(filters)
+		di, err = c.describeInstances(nil, filters)
 		if err != nil {
 			return nil, err
 		}
@@ -2620,7 +2620,7 @@ func (c *Cloud) DisksAreAttached(nodeDisks map[types.NodeName][]KubernetesVolume
 		for _, diskName := range diskNames {
 			setNodeDisk(attached, diskName, nodeName, false)
 		}
-		nodeNames = append(nodeNames, mapNodeNameToPrivateDNSName(nodeName))
+		nodeNames = append(nodeNames, mapNodeNameToInstanceID(nodeName))
 	}
 
 	// Note that we get instances regardless of state.
@@ -4400,28 +4400,22 @@ func (c *Cloud) getInstancesByIDs(instanceIDs []*string) (map[string]*ec2.Instan
 }
 
 func (c *Cloud) getInstancesByNodeNames(nodeNames []string, states ...string) ([]*ec2.Instance, error) {
-	names := aws.StringSlice(nodeNames)
 	ec2Instances := []*ec2.Instance{}
 
-	for i := 0; i < len(names); i += filterNodeLimit {
+	for i := 0; i < len(nodeNames); i += filterNodeLimit {
 		end := i + filterNodeLimit
-		if end > len(names) {
-			end = len(names)
+		if end > len(nodeNames) {
+			end = len(nodeNames)
 		}
 
-		nameSlice := names[i:end]
+		ids := nodeNames[i:end]
 
-		nodeNameFilter := &ec2.Filter{
-			Name:   aws.String("private-dns-name"),
-			Values: nameSlice,
-		}
-
-		filters := []*ec2.Filter{nodeNameFilter}
+		filters := []*ec2.Filter{}
 		if len(states) > 0 {
 			filters = append(filters, newEc2Filter("instance-state-name", states...))
 		}
 
-		instances, err := c.describeInstances(filters)
+		instances, err := c.describeInstances(ids, filters)
 		if err != nil {
 			klog.V(2).Infof("Failed to describe instances %v", nodeNames)
 			return nil, err
@@ -4437,9 +4431,19 @@ func (c *Cloud) getInstancesByNodeNames(nodeNames []string, states ...string) ([
 }
 
 // TODO: Move to instanceCache
-func (c *Cloud) describeInstances(filters []*ec2.Filter) ([]*ec2.Instance, error) {
-	request := &ec2.DescribeInstancesInput{
-		Filters: filters,
+func (c *Cloud) describeInstances(ids []string, filters []*ec2.Filter) ([]*ec2.Instance, error) {
+	var request *ec2.DescribeInstancesInput
+
+	if ids == nil {
+		request = &ec2.DescribeInstancesInput{
+			Filters: filters,
+		}
+	} else {
+		instanceIDs := aws.StringSlice(ids)
+		request = &ec2.DescribeInstancesInput{
+			InstanceIds: instanceIDs,
+			Filters:     filters,
+		}
 	}
 
 	response, err := c.ec2.DescribeInstances(request)
@@ -4456,15 +4460,15 @@ func (c *Cloud) describeInstances(filters []*ec2.Filter) ([]*ec2.Instance, error
 	return matches, nil
 }
 
-// mapNodeNameToPrivateDNSName maps a k8s NodeName to an AWS Instance PrivateDNSName
+// mapNodeNameToInstanceID maps a k8s NodeName to an AWS Instance ID
 // This is a simple string cast
-func mapNodeNameToPrivateDNSName(nodeName types.NodeName) string {
+func mapNodeNameToInstanceID(nodeName types.NodeName) string {
 	return string(nodeName)
 }
 
 // mapInstanceToNodeName maps a EC2 instance to a k8s NodeName, by extracting the PrivateDNSName
 func mapInstanceToNodeName(i *ec2.Instance) types.NodeName {
-	return types.NodeName(aws.StringValue(i.PrivateDnsName))
+	return types.NodeName(aws.StringValue(i.InstanceId))
 }
 
 var aliveFilter = []string{
@@ -4478,14 +4482,13 @@ var aliveFilter = []string{
 // Returns the instance with the specified node name
 // Returns nil if it does not exist
 func (c *Cloud) findInstanceByNodeName(nodeName types.NodeName) (*ec2.Instance, error) {
-	privateDNSName := mapNodeNameToPrivateDNSName(nodeName)
+	instanceID := mapNodeNameToInstanceID(nodeName)
 	filters := []*ec2.Filter{
-		newEc2Filter("private-dns-name", privateDNSName),
 		// exclude instances in "terminated" state
 		newEc2Filter("instance-state-name", aliveFilter...),
 	}
 
-	instances, err := c.describeInstances(filters)
+	instances, err := c.describeInstances([]string{instanceID}, filters)
 	if err != nil {
 		return nil, err
 	}

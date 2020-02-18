@@ -658,7 +658,7 @@ func TestNodeAddresses(t *testing.T) {
 	aws3, _ := mockInstancesResp(&instance0, instances[0:1])
 	// change node name so it uses the instance instead of metadata
 	aws3.selfAWSInstance.nodeName = "foo"
-	addrs3, err3 := aws3.NodeAddresses(context.TODO(), "instance-same.ec2.internal")
+	addrs3, err3 := aws3.NodeAddresses(context.TODO(), "i-0")
 	if err3 != nil {
 		t.Errorf("Should not error when instance found")
 	}
@@ -1172,20 +1172,19 @@ func TestFindInstanceByNodeNameExcludesTerminatedInstances(t *testing.T) {
 	}
 	awsServices := newMockedFakeAWSServices(TestClusterID)
 
-	nodeName := types.NodeName("my-dns.internal")
-
 	var tag ec2.Tag
 	tag.Key = aws.String(TagNameKubernetesClusterLegacy)
 	tag.Value = aws.String(TestClusterID)
 	tags := []*ec2.Tag{&tag}
 
 	var testInstance ec2.Instance
-	testInstance.PrivateDnsName = aws.String(string(nodeName))
+	testInstance.PrivateDnsName = aws.String("my-dns.internal")
 	testInstance.Tags = tags
 
 	awsDefaultInstances := awsServices.instances
 	for _, awsState := range awsStates {
 		id := "i-" + awsState.state
+		nodeName := types.NodeName(id)
 		testInstance.InstanceId = aws.String(id)
 		testInstance.State = &ec2.InstanceState{Code: aws.Int64(awsState.id), Name: aws.String(awsState.state)}
 
@@ -1227,12 +1226,13 @@ func TestGetInstanceByNodeNameBatching(t *testing.T) {
 	tags := []*ec2.Tag{&tag}
 	nodeNames := []string{}
 	for i := 0; i < 200; i++ {
-		nodeName := fmt.Sprintf("ip-171-20-42-%d.ec2.internal", i)
+		privateDNSName := fmt.Sprintf("ip-171-20-42-%d.ec2.internal", i)
+		instanceID := fmt.Sprintf("i-abcedf%d", i)
+		nodeName := instanceID
 		nodeNames = append(nodeNames, nodeName)
 		ec2Instance := &ec2.Instance{}
-		instanceID := fmt.Sprintf("i-abcedf%d", i)
 		ec2Instance.InstanceId = aws.String(instanceID)
-		ec2Instance.PrivateDnsName = aws.String(nodeName)
+		ec2Instance.PrivateDnsName = aws.String(privateDNSName)
 		ec2Instance.State = &ec2.InstanceState{Code: aws.Int64(48), Name: aws.String("running")}
 		ec2Instance.Tags = tags
 		awsServices.instances = append(awsServices.instances, ec2Instance)

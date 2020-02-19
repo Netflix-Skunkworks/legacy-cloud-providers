@@ -143,7 +143,7 @@ func (c *Cloud) configureInstanceSourceDestCheck(instanceID string, sourceDestCh
 // CreateRoute implements Routes.CreateRoute
 // Create the described route
 func (c *Cloud) CreateRoute(ctx context.Context, clusterName string, nameHint string, route *cloudprovider.Route) error {
-	instance, err := c.getInstanceByNodeName(route.TargetNode)
+	instance, err := c.getInstanceByID(mapNodeNameToInstanceID(route.TargetNode))
 	if err != nil {
 		return err
 	}

@@ -1478,9 +1478,9 @@ func (c *Cloud) NodeAddresses(ctx context.Context, name types.NodeName) ([]v1.No
 		return addresses, nil
 	}
 
-	instance, err := c.getInstanceByNodeName(name)
+	instance, err := c.getInstanceByID(mapNodeNameToInstanceID(name))
 	if err != nil {
-		return nil, fmt.Errorf("getInstanceByNodeName failed for %q with %q", name, err)
+		return nil, fmt.Errorf("getInstanceByID failed for %q with %q", name, err)
 	}
 	return extractNodeAddresses(instance)
 }
@@ -1649,13 +1649,13 @@ func (c *Cloud) InstanceID(ctx context.Context, nodeName types.NodeName) (string
 	if c.selfAWSInstance.nodeName == nodeName {
 		return "/" + c.selfAWSInstance.availabilityZone + "/" + c.selfAWSInstance.awsID, nil
 	}
-	inst, err := c.getInstanceByNodeName(nodeName)
+	inst, err := c.getInstanceByID(mapNodeNameToInstanceID(nodeName))
 	if err != nil {
 		if err == cloudprovider.InstanceNotFound {
 			// The Instances interface requires that we return InstanceNotFound (without wrapping)
 			return "", err
 		}
-		return "", fmt.Errorf("getInstanceByNodeName failed for %q with %q", nodeName, err)
+		return "", fmt.Errorf("getInstanceByID failed for %q with %q", nodeName, err)
 	}
 	return "/" + aws.StringValue(inst.Placement.AvailabilityZone) + "/" + aws.StringValue(inst.InstanceId), nil
 }
@@ -1682,9 +1682,9 @@ func (c *Cloud) InstanceType(ctx context.Context, nodeName types.NodeName) (stri
 	if c.selfAWSInstance.nodeName == nodeName {
 		return c.selfAWSInstance.instanceType, nil
 	}
-	inst, err := c.getInstanceByNodeName(nodeName)
+	inst, err := c.getInstanceByID(mapNodeNameToInstanceID(nodeName))
 	if err != nil {
-		return "", fmt.Errorf("getInstanceByNodeName failed for %q with %q", nodeName, err)
+		return "", fmt.Errorf("getInstanceByID failed for %q with %q", nodeName, err)
 	}
 	return aws.StringValue(inst.InstanceType), nil
 }
@@ -1790,7 +1790,7 @@ func (c *Cloud) GetZoneByProviderID(ctx context.Context, providerID string) (clo
 // This is particularly useful in external cloud providers where the kubelet
 // does not initialize node data.
 func (c *Cloud) GetZoneByNodeName(ctx context.Context, nodeName types.NodeName) (cloudprovider.Zone, error) {
-	instance, err := c.getInstanceByNodeName(nodeName)
+	instance, err := c.getInstanceByID(mapNodeNameToInstanceID(nodeName))
 	if err != nil {
 		return cloudprovider.Zone{}, err
 	}
@@ -2699,7 +2699,7 @@ func (c *Cloud) DisksAreAttached(nodeDisks map[types.NodeName][]KubernetesVolume
 
 	// Note that we get instances regardless of state.
 	// This means there might be multiple nodes with the same node names.
-	awsInstances, err := c.getInstancesByNodeNames(nodeNames)
+	awsInstances, err := c.getInstancesByIDs(aws.StringSlice(nodeNames))
 	if err != nil {
 		// When there is an error fetching instance information
 		// it is safer to return nil and let volume information not be touched.
@@ -4497,37 +4497,6 @@ func (c *Cloud) getInstancesByIDs(instanceIDs []*string) (map[string]*ec2.Instan
 	return instancesByID, nil
 }
 
-func (c *Cloud) getInstancesByNodeNames(nodeNames []string, states ...string) ([]*ec2.Instance, error) {
-	ec2Instances := []*ec2.Instance{}
-
-	for i := 0; i < len(nodeNames); i += filterNodeLimit {
-		end := i + filterNodeLimit
-		if end > len(nodeNames) {
-			end = len(nodeNames)
-		}
-
-		ids := nodeNames[i:end]
-
-		filters := []*ec2.Filter{}
-		if len(states) > 0 {
-			filters = append(filters, newEc2Filter("instance-state-name", states...))
-		}
-
-		instances, err := c.describeInstances(ids, filters)
-		if err != nil {
-			klog.V(2).Infof("Failed to describe instances %v", nodeNames)
-			return nil, err
-		}
-		ec2Instances = append(ec2Instances, instances...)
-	}
-
-	if len(ec2Instances) == 0 {
-		klog.V(3).Infof("Failed to find any instances %v", nodeNames)
-		return nil, nil
-	}
-	return ec2Instances, nil
-}
-
 // TODO: Move to instanceCache
 func (c *Cloud) describeInstances(ids []string, filters []*ec2.Filter) ([]*ec2.Instance, error) {
 	var request *ec2.DescribeInstancesInput
@@ -4577,56 +4546,12 @@ var aliveFilter = []string{
 	ec2.InstanceStateNameStopped,
 }
 
-// Returns the instance with the specified node name
-// Returns nil if it does not exist
-func (c *Cloud) findInstanceByNodeName(nodeName types.NodeName) (*ec2.Instance, error) {
-	instanceID := mapNodeNameToInstanceID(nodeName)
-	filters := []*ec2.Filter{
-		// exclude instances in "terminated" state
-		newEc2Filter("instance-state-name", aliveFilter...),
-	}
-
-	instances, err := c.describeInstances([]string{instanceID}, filters)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(instances) == 0 {
-		return nil, nil
-	}
-	if len(instances) > 1 {
-		return nil, fmt.Errorf("multiple instances found for name: %s", nodeName)
-	}
-	return instances[0], nil
-}
-
-// Returns the instance with the specified node name
-// Like findInstanceByNodeName, but returns error if node not found
-func (c *Cloud) getInstanceByNodeName(nodeName types.NodeName) (*ec2.Instance, error) {
-	var instance *ec2.Instance
-
-	// we leverage node cache to try to retrieve node's provider id first, as
-	// get instance by provider id is way more efficient than by filters in
-	// aws context
-	awsID, err := c.nodeNameToProviderID(nodeName)
-	if err != nil {
-		klog.V(3).Infof("Unable to convert node name %q to aws instanceID, fall back to findInstanceByNodeName: %v", nodeName, err)
-		instance, err = c.findInstanceByNodeName(nodeName)
-	} else {
-		instance, err = c.getInstanceByID(string(awsID))
-	}
-	if err == nil && instance == nil {
-		return nil, cloudprovider.InstanceNotFound
-	}
-	return instance, err
-}
-
 func (c *Cloud) getFullInstance(nodeName types.NodeName) (*awsInstance, *ec2.Instance, error) {
 	if nodeName == "" {
 		instance, err := c.getInstanceByID(c.selfAWSInstance.awsID)
 		return c.selfAWSInstance, instance, err
 	}
-	instance, err := c.getInstanceByNodeName(nodeName)
+	instance, err := c.getInstanceByID(mapNodeNameToInstanceID(nodeName))
 	if err != nil {
 		return nil, nil, err
 	}

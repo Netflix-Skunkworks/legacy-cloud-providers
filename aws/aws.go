@@ -1507,7 +1507,9 @@ func parseMetadataLocalHostname(metadata string) (string, []string) {
 
 // extractNodeAddresses maps the instance information from EC2 to an array of NodeAddresses
 func extractNodeAddresses(instance *ec2.Instance) ([]v1.NodeAddress, error) {
-	// Not clear if the order matters here, but we might as well indicate a sensible preference order
+	// We want the IPs to end up in order by interface (in particular, we want eth0's IPs first), but network interfaces
+	// isn't necessarily sorted in that order so we have to explicitly order by device number (device number == the "0"
+	// in "eth0").
 
 	if instance == nil {
 		return nil, fmt.Errorf("nil instance passed to extractNodeAddresses")
@@ -1516,6 +1518,10 @@ func extractNodeAddresses(instance *ec2.Instance) ([]v1.NodeAddress, error) {
 	addresses := []v1.NodeAddress{}
 
 	// handle internal network interfaces
+	sort.Slice(instance.NetworkInterfaces, func(i, j int) bool {
+		return aws.Int64Value(instance.NetworkInterfaces[i].Attachment.DeviceIndex) <
+			aws.Int64Value(instance.NetworkInterfaces[j].Attachment.DeviceIndex)
+	})
 	for _, networkInterface := range instance.NetworkInterfaces {
 		// skip network interfaces that are not currently in use
 		if aws.StringValue(networkInterface.Status) != ec2.NetworkInterfaceStatusInUse {
